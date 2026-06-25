@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Speed Tracker</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--card:#121c2f;--muted:#93a4bd;--line:#273854;--good:#42d392;--warn:#f5b942;--bad:#ff6b6b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf3fb;font:15px system-ui,-apple-system,sans-serif}
+main{max-width:1180px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}
+h1{margin:0;font-size:26px}.range button{background:transparent;color:var(--muted);border:1px solid var(--line);padding:7px 11px}
+.range button:first-child{border-radius:8px 0 0 8px}.range button:last-child{border-radius:0 8px 8px 0}.range .active{background:#253b60;color:white}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.label{color:var(--muted);font-size:12px;text-transform:uppercase}.value{font-size:26px;margin-top:5px}.status{font-weight:700}
+.healthy{color:var(--good)}.degraded{color:var(--warn)}.failed{color:var(--bad)}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel h2{font-size:15px;margin:0 0 10px}canvas{width:100%;height:220px}
+table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}th{color:var(--muted)}
+#message{color:var(--muted);margin:12px 0}.wide{margin-top:12px;overflow:auto}
+@media(max-width:800px){.cards,.charts{grid-template-columns:1fr 1fr}}@media(max-width:520px){main{padding:16px}.cards,.charts{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+</style></head><body><main>
+<header><div><h1>Connection health</h1><div id="message">Loading…</div></div>
+<div class="range"><button data-range="24h" class="active">24h</button><button data-range="7d">7d</button><button data-range="30d">30d</button><button data-range="all">All</button></div></header>
+<section class="cards">
+<div class="card"><div class="label">Status</div><div id="status" class="value">—</div></div>
+<div class="card"><div class="label">Download</div><div id="download" class="value">—</div></div>
+<div class="card"><div class="label">Upload</div><div id="upload" class="value">—</div></div>
+<div class="card"><div class="label">Idle / loaded latency</div><div id="latency" class="value">—</div></div>
+</section>
+<section class="charts">
+<div class="panel"><h2>Download / upload (Mbps)</h2><canvas id="speed"></canvas></div>
+<div class="panel"><h2>Idle / loaded latency (ms)</h2><canvas id="latencies"></canvas></div>
+<div class="panel"><h2>Responsiveness (RPM)</h2><canvas id="responsiveness"></canvas></div>
+<div class="panel"><h2>Packet loss / DNS / HTTPS (ms)</h2><canvas id="health"></canvas></div>
+</section>
+<section class="panel wide"><h2>Recent runs</h2><table><thead><tr><th>Time</th><th>Status</th><th>Down</th><th>Up</th><th>Loss</th><th>DNS</th><th>HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
+</main><script>
+let selected='24h'; const fmt=(v,d=1)=>v==null?'—':Number(v).toFixed(d);
+const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function draw(id,runs,series){const c=document.getElementById(id),dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);x.strokeStyle='#273854';x.beginPath();for(let i=0;i<5;i++){let y=12+i*(h-30)/4;x.moveTo(35,y);x.lineTo(w-8,y)}x.stroke();let vals=series.flatMap(s=>runs.map(r=>r[s.key]).filter(v=>v!=null));let max=Math.max(...vals,1);series.forEach(s=>{x.strokeStyle=s.color;x.lineWidth=2;x.beginPath();let started=false;runs.forEach((r,i)=>{let v=r[s.key];if(v==null){started=false;return}let px=35+(w-45)*(runs.length<2?1:i/(runs.length-1)),py=12+(h-30)*(1-v/max);if(!started)x.moveTo(px,py);else x.lineTo(px,py);started=true});x.stroke()});x.fillStyle='#93a4bd';x.font='11px system-ui';x.fillText(max.toFixed(max<10?1:0),2,15);x.fillText('0',18,h-15);series.forEach((s,i)=>{x.fillStyle=s.color;x.fillText(s.name,42+i*95,h-5)})}
+async function load(){let staticMode=!['127.0.0.1','localhost'].includes(location.hostname),runs,l;
+if(staticMode){let payload=await (await fetch('./data.json',{cache:'no-store'})).json(),all=payload.runs||[],hours={'24h':24,'7d':168,'30d':720}[selected],cutoff=hours?Date.now()-hours*3600000:0;runs=all.filter(r=>new Date(r.started_at).getTime()>=cutoff).reverse();l=all[0]||null}
+else{let [sumRes,runsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000')]),sum=await sumRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest}
+if(!l){document.getElementById('message').textContent='No tests recorded yet. Run: python3 speed_tracker.py collect';return}
+document.getElementById('message').textContent='Last test '+new Date(l.completed_at).toLocaleString()+' · '+fmt(l.duration_seconds)+' seconds';
+let status=document.getElementById('status');status.textContent=l.status;status.className='value status '+l.status;
+document.getElementById('download').textContent=fmt(l.download_mbps)+' Mbps';document.getElementById('upload').textContent=fmt(l.upload_mbps)+' Mbps';document.getElementById('latency').textContent=fmt(l.idle_latency_ms,0)+' / '+fmt(l.loaded_latency_ms,0)+' ms';
+draw('speed',runs,[{key:'download_mbps',name:'Download',color:'#58a6ff'},{key:'upload_mbps',name:'Upload',color:'#42d392'}]);
+draw('latencies',runs,[{key:'idle_latency_ms',name:'Idle',color:'#42d392'},{key:'loaded_latency_ms',name:'Loaded',color:'#f5b942'}]);
+draw('responsiveness',runs,[{key:'responsiveness_rpm',name:'RPM',color:'#b392f0'}]);
+draw('health',runs,[{key:'packet_loss_percent',name:'Loss %',color:'#ff6b6b'},{key:'dns_time_ms',name:'DNS',color:'#58a6ff'},{key:'https_time_ms',name:'HTTPS',color:'#f5b942'}]);
+document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${fmt(r.download_mbps)}</td><td>${fmt(r.upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}%</td><td>${fmt(r.dns_time_ms,0)} ms</td><td>${fmt(r.https_time_ms,0)} ms</td><td>${esc([...(r.degraded_reasons||[]),...(r.errors||[])].join('; ')||'—')}</td></tr>`).join('');
+}
+document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{selected=b.dataset.range;document.querySelectorAll('[data-range]').forEach(x=>x.classList.toggle('active',x===b));load()});addEventListener('resize',()=>load());load().catch(e=>document.getElementById('message').textContent=e);
+</script></body></html>
