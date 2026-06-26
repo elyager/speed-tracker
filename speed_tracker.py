@@ -1226,6 +1226,7 @@ async function load(){let staticMode=!['127.0.0.1','localhost'].includes(locatio
 if(staticMode){let payload=await (await fetch('./data.json',{cache:'no-store'})).json(),all=payload.runs||[],hours={'24h':24,'7d':168,'30d':720}[selected],cutoff=hours?Date.now()-hours*3600000:0;runs=all.filter(r=>new Date(r.started_at).getTime()>=cutoff).reverse();l=all[0]||null;h=payload.current_health||{}}
 else{let [sumRes,runsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000')]),sum=await sumRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{}}
 if(!l){document.getElementById('message').textContent='No hourly tests recorded yet. Run: python3 speed_tracker.py collect';return}
+runs=runs.map(normalizeRun);l=normalizeRun(l);
 document.getElementById('message').textContent='Last hourly test '+new Date(l.completed_at).toLocaleString()+' · '+fmt(l.duration_seconds)+' seconds';
 let status=document.getElementById('status');let currentStatus=h.status||l.status;status.textContent=currentStatus;status.className='value status '+currentStatus;
 document.getElementById('testmy').textContent=pair(l.testmy_download_mbps,l.testmy_upload_mbps)+' Mbps';
@@ -1243,6 +1244,7 @@ draw('loss',runs,[{key:'packet_loss_percent',name:'Internet',color:'#ff6b6b'},{k
 draw('http',runs,[{key:'dns_time_ms',name:'DNS',color:'#58a6ff'},{key:'tcp_connect_ms',name:'TCP',color:'#42d392'},{key:'tls_handshake_ms',name:'TLS',color:'#f5b942'},{key:'first_byte_ms',name:'TTFB',color:'#b392f0'}]);
 document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.testmy_download_mbps,r.testmy_upload_mbps)}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
 }
+function normalizeRun(r){if(!r)return r;return {...r,networkquality_download_mbps:r.networkquality_download_mbps??r.download_mbps,networkquality_upload_mbps:r.networkquality_upload_mbps??r.upload_mbps,latency_p50:r.latency_p50??r.ping_latency_ms,latency_p95:r.latency_p95??r.ping_latency_ms,latency_p99:r.latency_p99??r.loaded_latency_ms??r.ping_latency_ms};}
 document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{selected=b.dataset.range;document.querySelectorAll('[data-range]').forEach(x=>x.classList.toggle('active',x===b));load()});addEventListener('resize',()=>load());load().catch(e=>document.getElementById('message').textContent=e);
 </script></body></html>
 """
