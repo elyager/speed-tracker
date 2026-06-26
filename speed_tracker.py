@@ -735,7 +735,7 @@ def dedupe(values):
 
 
 def collect_measurements(connection=None, runner=run_command, testmy_command=None):
-    if callable(connection) and runner is run_command:
+    if callable(connection) and not hasattr(connection, "execute") and runner is run_command:
         runner = connection
         connection = None
     started_at = utc_now()
