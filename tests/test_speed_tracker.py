@@ -337,6 +337,10 @@ class SpeedTrackerTests(unittest.TestCase):
             self.assertIn('id="apple-upload" class="value"', dashboard)
             self.assertIn("Download / Upload", dashboard)
             self.assertIn('id="collection-interval"', dashboard)
+            self.assertIn("networkquality_download_mbps',name:'Download',color:'#42d392'", dashboard)
+            self.assertIn("networkquality_upload_mbps',name:'Upload',color:'#58a6ff'", dashboard)
+            self.assertNotIn("data-speed-metric", dashboard)
+            self.assertNotIn("speedMetric", dashboard)
 
     def test_collection_interval_config_validation_and_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
