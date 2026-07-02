@@ -29,33 +29,18 @@ The monitor LaunchAgent runs continuously and samples:
 - IPv6 ping every 60 seconds when an IPv6 default route exists
 - DNS, HTTPS/TLS timings, and route state every 5 minutes
 
-The collection LaunchAgent runs a complete test at minute `00` each hour and
-once when loaded. If the Mac is asleep, macOS coalesces missed calendar events
-into one run after wake. Each completed run updates `site/data.json`, commits
-it, and pushes it to the private GitHub repository. GitHub Actions then deploys
-the static dashboard. Full speed tests consume data and can affect active
-network traffic, so they are hourly only.
+The collection LaunchAgent runs a complete test every 60 minutes by default and
+once when loaded. The frequency can be changed from 15 to 1440 minutes in the
+local dashboard. Each completed run updates `site/data.json`, commits it, and
+pushes it to the private GitHub repository. GitHub Actions then deploys the
+static dashboard. Full speed tests consume data and can affect active network
+traffic, so use shorter intervals carefully.
 
 ## Speed providers
 
-Hourly collection always tries Apple `networkQuality` for download, upload,
-responsiveness, idle latency, and loaded latency. To also record a TestMy.net
-compatible result, set `SPEED_TRACKER_TESTMY_COMMAND` to a local command that
-prints JSON:
-
-```sh
-export SPEED_TRACKER_TESTMY_COMMAND='/path/to/testmy-wrapper --json'
-```
-
-Expected JSON shape:
-
-```json
-{"download_mbps": 320.5, "upload_mbps": 45.2}
-```
-
-When TestMy is configured, missing or invalid TestMy output marks the hourly run
-as degraded. If both TestMy and `networkQuality` fail to produce speed results,
-the run is failed.
+Hourly collection uses Apple `networkQuality` in sequential mode for download
+and upload, plus responsiveness, idle latency, and loaded latency. If it cannot
+produce a speed result, the run is failed.
 
 Remove all LaunchAgents while preserving history:
 

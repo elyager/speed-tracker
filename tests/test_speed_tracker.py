@@ -53,16 +53,6 @@ class SpeedTrackerTests(unittest.TestCase):
         self.assertEqual(parsed["first_byte_ms"], 40)
         self.assertEqual(parsed["https_time_ms"], 200)
 
-    def test_parse_testmy_json(self):
-        parsed = tracker.parse_testmy_json(json.dumps({
-            "download_mbps": "320.5",
-            "upload_mbps": 45.2,
-        }))
-        self.assertEqual(parsed["testmy_download_mbps"], 320.5)
-        self.assertEqual(parsed["testmy_upload_mbps"], 45.2)
-        with self.assertRaises(ValueError):
-            tracker.parse_testmy_json(json.dumps({"status": "ok"}))
-
     def test_route_dns_proxy_and_traceroute_parsers(self):
         route = tracker.parse_default_route(
             "gateway: 192.168.1.1\ninterface: en0\n"
@@ -179,8 +169,6 @@ class SpeedTrackerTests(unittest.TestCase):
         self.assertIn("p95 latency is 151 ms", reasons)
         failed = dict(healthy, download_mbps=None, networkquality_download_mbps=None)
         self.assertEqual(tracker.classify(failed)[0], "failed")
-        testmy_missing = dict(healthy, testmy_download_mbps=None)
-        self.assertEqual(tracker.classify(testmy_missing, testmy_configured=True)[0], "degraded")
 
     def test_database_migration_copies_legacy_speed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -248,6 +236,7 @@ class SpeedTrackerTests(unittest.TestCase):
             "responsiveness": 400,
             "interface_name": "en0",
         })
+        network_quality_commands = []
 
         def runner(command, timeout):
             executable = command[0]
@@ -274,31 +263,24 @@ class SpeedTrackerTests(unittest.TestCase):
                     "offline",
                     7,
                 )
-            if executable.endswith("testmy"):
-                return Completed(json.dumps({
-                    "download_mbps": 120,
-                    "upload_mbps": 40,
-                }))
             if executable.endswith("networkQuality"):
+                network_quality_commands.append(command)
                 return Completed(network_json)
             raise AssertionError(command)
 
-        result = tracker.collect_measurements(runner=runner, testmy_command=["testmy"])
+        result = tracker.collect_measurements(runner=runner)
         self.assertEqual(result["status"], "degraded")
         self.assertFalse(result["https_ok"])
-        self.assertEqual(result["download_mbps"], 120)
-        self.assertEqual(result["testmy_download_mbps"], 120)
+        self.assertEqual(result["download_mbps"], 80)
+        self.assertEqual(result["upload_mbps"], 20)
         self.assertEqual(result["networkquality_download_mbps"], 80)
+        self.assertEqual(result["networkquality_upload_mbps"], 20)
+        self.assertEqual(
+            network_quality_commands,
+            [["/usr/bin/networkQuality", "-s", "-c", "-M", "120"]],
+        )
         self.assertEqual(result["route_hop_count"], 1)
         self.assertTrue(result["errors"])
-
-    def test_testmy_failure_degrades_when_configured(self):
-        def runner(command, timeout):
-            return Completed("not json")
-
-        result, error = tracker.run_testmy_speed(runner, ["testmy"])
-        self.assertEqual(result, {})
-        self.assertIn("TestMy parse failed", error)
 
     def test_nonblocking_lock(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -309,11 +291,13 @@ class SpeedTrackerTests(unittest.TestCase):
                         pass
 
     def test_plists_are_structurally_valid_and_local(self):
-        plists = tracker.agent_plists("/tmp/speed_tracker.py", "/usr/bin/python3")
+        plists = tracker.agent_plists(
+            "/tmp/speed_tracker.py", "/usr/bin/python3", 90
+        )
         collect = plists[tracker.COLLECT_LABEL]
         monitor = plists[tracker.MONITOR_LABEL]
         server = plists[tracker.SERVER_LABEL]
-        self.assertEqual(collect["StartCalendarInterval"], {"Minute": 0})
+        self.assertEqual(collect["StartInterval"], 90 * 60)
         self.assertTrue(collect["RunAtLoad"])
         self.assertEqual(collect["ProgramArguments"][-1], "--publish")
         self.assertEqual(monitor["ProgramArguments"][-1], "monitor")
@@ -348,6 +332,21 @@ class SpeedTrackerTests(unittest.TestCase):
             self.assertNotIn("errors", published)
             self.assertEqual((output / "CNAME").read_text(), "net.noventayocho.work\n")
             self.assertTrue((output / ".nojekyll").exists())
+            dashboard = (output / "index.html").read_text()
+            self.assertIn('id="apple-download" class="value"', dashboard)
+            self.assertIn('id="apple-upload" class="value"', dashboard)
+            self.assertIn("Download / Upload", dashboard)
+            self.assertIn('id="collection-interval"', dashboard)
+
+    def test_collection_interval_config_validation_and_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            self.assertEqual(tracker.load_collection_interval(path), 60)
+            self.assertEqual(tracker.save_collection_interval(90, path), 90)
+            self.assertEqual(tracker.load_collection_interval(path), 90)
+            for invalid in (14, 1441, 60.5, "hourly", True):
+                with self.assertRaises(ValueError):
+                    tracker.validate_collection_interval(invalid)
 
 
 def sample_result():
@@ -358,8 +357,6 @@ def sample_result():
         "status": "healthy",
         "download_mbps": 100,
         "upload_mbps": 25,
-        "testmy_download_mbps": 100,
-        "testmy_upload_mbps": 25,
         "networkquality_download_mbps": 95,
         "networkquality_upload_mbps": 24,
         "idle_latency_ms": 30,

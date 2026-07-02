@@ -9,7 +9,6 @@ import json
 import os
 import plistlib
 import re
-import shlex
 import sqlite3
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 APP_DIR = Path.home() / "Library" / "Application Support" / "Speed Tracker"
 DB_PATH = APP_DIR / "network_health.sqlite"
+CONFIG_PATH = APP_DIR / "config.json"
 LOCK_PATH = APP_DIR / "collect.lock"
 LOG_DIR = Path.home() / "Library" / "Logs" / "SpeedTracker"
 AGENT_DIR = Path.home() / "Library" / "LaunchAgents"
@@ -39,6 +39,9 @@ HTTPS_URL = "https://example.com/"
 FALLBACK_RESOLVER = "1.1.1.1"
 MONITOR_INTERVAL_SECONDS = 15
 MONITOR_WINDOW_SECONDS = 5 * 60
+DEFAULT_COLLECTION_INTERVAL_MINUTES = 60
+MIN_COLLECTION_INTERVAL_MINUTES = 15
+MAX_COLLECTION_INTERVAL_MINUTES = 1440
 
 RUN_COLUMNS = {
     "router_ping_ok": "INTEGER",
@@ -54,8 +57,6 @@ RUN_COLUMNS = {
     "tcp_connect_ms": "REAL",
     "tls_handshake_ms": "REAL",
     "first_byte_ms": "REAL",
-    "testmy_download_mbps": "REAL",
-    "testmy_upload_mbps": "REAL",
     "networkquality_download_mbps": "REAL",
     "networkquality_upload_mbps": "REAL",
     "route_hop_count": "INTEGER",
@@ -101,8 +102,6 @@ CREATE TABLE IF NOT EXISTS runs (
     tcp_connect_ms REAL,
     tls_handshake_ms REAL,
     first_byte_ms REAL,
-    testmy_download_mbps REAL,
-    testmy_upload_mbps REAL,
     networkquality_download_mbps REAL,
     networkquality_upload_mbps REAL,
     route_hop_count INTEGER,
@@ -345,43 +344,6 @@ def empty_curl_timings():
         "https_time_ms": None,
         "https_ok": False,
     }
-
-
-def parse_testmy_json(output):
-    data = json.loads(output)
-    if not isinstance(data, dict):
-        raise ValueError("TestMy output must be a JSON object")
-    download = number(data.get("download_mbps"))
-    upload = number(data.get("upload_mbps"))
-    if download is None and isinstance(data.get("download"), dict):
-        download = number(data["download"].get("mbps"))
-    if upload is None and isinstance(data.get("upload"), dict):
-        upload = number(data["upload"].get("mbps"))
-    if download is None and upload is None:
-        raise ValueError("TestMy output needs download_mbps or upload_mbps")
-    return {
-        "testmy_download_mbps": download,
-        "testmy_upload_mbps": upload,
-    }
-
-
-def testmy_command_from_env():
-    command = os.environ.get("SPEED_TRACKER_TESTMY_COMMAND", "").strip()
-    return shlex.split(command) if command else None
-
-
-def run_testmy_speed(runner=run_command, command=None):
-    command = command if command is not None else testmy_command_from_env()
-    if not command:
-        return {}, None
-    completed = runner(command, 180)
-    if completed.returncode:
-        message = completed.stderr.strip() or f"TestMy command exited {completed.returncode}"
-        return {}, message
-    try:
-        return parse_testmy_json(completed.stdout), None
-    except (json.JSONDecodeError, ValueError) as exc:
-        return {}, f"TestMy parse failed: {exc}"
 
 
 def parse_default_route(output):
@@ -666,7 +628,7 @@ def sample_loss(rows):
     return failed * 100.0 / len(rows)
 
 
-def classify(result, testmy_configured=False, require_speed=True):
+def classify(result, require_speed=True):
     reasons = []
     if result.get("internet_ping_ok") is False and result.get("https_ok") is False:
         reasons.append("No usable internet path")
@@ -704,22 +666,15 @@ def classify(result, testmy_configured=False, require_speed=True):
         reasons.append("HTTPS request failed")
     if result.get("route_changed"):
         reasons.append("Default route changed")
-    if testmy_configured and result.get("testmy_download_mbps") is None:
-        reasons.append("TestMy speed test failed")
-
     has_networkquality = (
         result.get("networkquality_download_mbps") is not None
         or result.get("networkquality_upload_mbps") is not None
-    )
-    has_testmy = (
-        result.get("testmy_download_mbps") is not None
-        or result.get("testmy_upload_mbps") is not None
     )
     has_legacy_speed = (
         result.get("download_mbps") is not None
         or result.get("upload_mbps") is not None
     )
-    if require_speed and not (has_networkquality or has_testmy or has_legacy_speed):
+    if require_speed and not (has_networkquality or has_legacy_speed):
         reasons.insert(0, "Network speed tests failed")
     if "No usable internet path" in reasons or "Network speed tests failed" in reasons:
         return "failed", dedupe(reasons)
@@ -734,7 +689,7 @@ def dedupe(values):
     return result
 
 
-def collect_measurements(connection=None, runner=run_command, testmy_command=None):
+def collect_measurements(connection=None, runner=run_command):
     if callable(connection) and not hasattr(connection, "execute") and runner is run_command:
         runner = connection
         connection = None
@@ -821,15 +776,7 @@ def collect_measurements(connection=None, runner=run_command, testmy_command=Non
         errors.append(f"curl: {exc}")
 
     try:
-        testmy, testmy_error = run_testmy_speed(runner, testmy_command)
-        result.update(testmy)
-        if testmy_error:
-            errors.append(testmy_error)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        errors.append(f"TestMy: {exc}")
-
-    try:
-        completed = runner(["/usr/bin/networkQuality", "-c", "-M", "120"], 130)
+        completed = runner(["/usr/bin/networkQuality", "-s", "-c", "-M", "120"], 130)
         if completed.stdout.strip():
             result.update(parse_network_quality(completed.stdout))
         network_quality_error = result.pop("network_quality_error", None)
@@ -842,13 +789,9 @@ def collect_measurements(connection=None, runner=run_command, testmy_command=Non
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError) as exc:
         errors.append(f"networkQuality: {exc}")
 
-    if result.get("testmy_download_mbps") is not None:
-        result["download_mbps"] = result["testmy_download_mbps"]
-    elif result.get("networkquality_download_mbps") is not None:
+    if result.get("networkquality_download_mbps") is not None:
         result["download_mbps"] = result["networkquality_download_mbps"]
-    if result.get("testmy_upload_mbps") is not None:
-        result["upload_mbps"] = result["testmy_upload_mbps"]
-    elif result.get("networkquality_upload_mbps") is not None:
+    if result.get("networkquality_upload_mbps") is not None:
         result["upload_mbps"] = result["networkquality_upload_mbps"]
 
     try:
@@ -863,9 +806,7 @@ def collect_measurements(connection=None, runner=run_command, testmy_command=Non
     result["started_at"] = started_at
     result["completed_at"] = utc_now()
     result["duration_seconds"] = round(time.monotonic() - started_monotonic, 3)
-    result["status"], reasons = classify(
-        result, testmy_configured=bool(testmy_command or testmy_command_from_env())
-    )
+    result["status"], reasons = classify(result)
     result["degraded_reasons"] = reasons
     result["errors"] = [error for error in errors if error]
     return result
@@ -898,8 +839,6 @@ def default_result():
         "tcp_connect_ms": None,
         "tls_handshake_ms": None,
         "first_byte_ms": None,
-        "testmy_download_mbps": None,
-        "testmy_upload_mbps": None,
         "networkquality_download_mbps": None,
         "networkquality_upload_mbps": None,
         "route_hop_count": None,
@@ -946,8 +885,7 @@ def insert_run(connection, result):
         "router_ping_ok", "internet_ping_ok", "ipv6_ok", "ipv4_route_ok",
         "ipv6_route_ok", "gateway_packet_loss_percent", "latency_p50",
         "latency_p95", "latency_p99", "jitter_ms", "tcp_connect_ms",
-        "tls_handshake_ms", "first_byte_ms", "testmy_download_mbps",
-        "testmy_upload_mbps", "networkquality_download_mbps",
+        "tls_handshake_ms", "first_byte_ms", "networkquality_download_mbps",
         "networkquality_upload_mbps", "route_hop_count", "route_changed",
         "default_interface", "route_signature", "dns_fallback_time_ms",
         "dns_fallback_ok", "dns_resolver_count", "proxy_vpn_hints",
@@ -1062,8 +1000,6 @@ PUBLIC_FIELDS = (
     "status",
     "download_mbps",
     "upload_mbps",
-    "testmy_download_mbps",
-    "testmy_upload_mbps",
     "networkquality_download_mbps",
     "networkquality_upload_mbps",
     "idle_latency_ms",
@@ -1188,18 +1124,21 @@ h1{margin:0;font-size:26px}.range button{background:transparent;color:var(--mute
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}
 .label{color:var(--muted);font-size:12px;text-transform:uppercase}.value{font-size:24px;margin-top:5px}.status{font-weight:700}
 .healthy{color:var(--good)}.degraded{color:var(--warn)}.failed{color:var(--bad)}
+.chart-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.metric-toggle button{background:transparent;color:var(--muted);border:1px solid var(--line);padding:5px 9px}.metric-toggle button:first-child{border-radius:6px 0 0 6px}.metric-toggle button:last-child{border-radius:0 6px 6px 0}.metric-toggle .active{background:#253b60;color:white}
 .layers{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}.layer{border:1px solid var(--line);border-radius:8px;padding:10px;background:#0f1828}.layer strong{display:block;font-size:13px}.layer span{color:var(--muted);font-size:12px}
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel h2{font-size:15px;margin:0 0 10px}canvas{width:100%;height:220px}
 table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted)}
 #message{color:var(--muted);margin:12px 0}.wide{margin-top:12px;overflow:auto}.small{font-size:12px;color:var(--muted)}
+.settings{display:flex;align-items:end;gap:10px;margin-bottom:12px}.settings[hidden]{display:none}.settings label{color:var(--muted);font-size:12px}.settings input{display:block;width:110px;margin-top:5px;background:#0f1828;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px}.settings button{padding:7px 12px}.settings-output{color:var(--muted);font-size:12px}
 @media(max-width:980px){.cards,.charts{grid-template-columns:1fr 1fr}.layers{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){main{padding:16px}.cards,.charts,.layers{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
 </style></head><body><main>
 <header><div><h1>Connection health</h1><div id="message">Loading...</div></div>
 <div class="range"><button data-range="24h" class="active">24h</button><button data-range="7d">7d</button><button data-range="30d">30d</button><button data-range="all">All</button></div></header>
+<form id="frequency-settings" class="settings" hidden><label>Test frequency (minutes)<input id="collection-interval" type="number" min="15" max="1440" step="1" required></label><button type="submit">Save</button><span id="settings-output" class="settings-output"></span></form>
 <section class="cards">
 <div class="card"><div class="label">Status</div><div id="status" class="value">-</div></div>
-<div class="card"><div class="label">TestMy speed</div><div id="testmy" class="value">-</div></div>
-<div class="card"><div class="label">Apple speed</div><div id="networkquality" class="value">-</div></div>
+<div class="card"><div class="label">Download</div><div id="apple-download" class="value">-</div><div class="small">Sequential speed test</div></div>
+<div class="card"><div class="label">Upload</div><div id="apple-upload" class="value">-</div><div class="small">Sequential speed test</div></div>
 <div class="card"><div class="label">p95 / p99 latency</div><div id="latency" class="value">-</div></div>
 </section>
 <section class="layers">
@@ -1211,26 +1150,25 @@ table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{t
 <div class="layer"><strong id="layer-route">-</strong><span>Route</span></div>
 </section>
 <section class="charts">
-<div class="panel"><h2>TestMy / Apple download (Mbps)</h2><canvas id="speed"></canvas></div>
+<div class="panel"><div class="chart-head"><h2>Provider speed (Mbps)</h2><div class="metric-toggle"><button data-speed-metric="download" class="active">Download</button><button data-speed-metric="upload">Upload</button></div></div><canvas id="speed"></canvas></div>
 <div class="panel"><h2>Latency percentiles (ms)</h2><canvas id="latencies"></canvas></div>
 <div class="panel"><h2>Packet loss (%)</h2><canvas id="loss"></canvas></div>
 <div class="panel"><h2>HTTP/TLS timing (ms)</h2><canvas id="http"></canvas></div>
 </section>
-<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Time</th><th>Status</th><th>TestMy</th><th>Apple</th><th>Loss</th><th>p95/p99</th><th>DNS/HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
+<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Time</th><th>Status</th><th>Download / Upload</th><th>Loss</th><th>p95/p99</th><th>DNS/HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
 </main><script>
-let selected='24h'; const fmt=(v,d=1)=>v==null?'-':Number(v).toFixed(d);
+let selected='24h',speedMetric='download'; const fmt=(v,d=1)=>v==null?'-':Number(v).toFixed(d);
 const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ok=v=>v==null?'-':(v?'OK':'Fail'); const pair=(a,b)=>fmt(a)+' / '+fmt(b);
 function draw(id,runs,series){const c=document.getElementById(id),dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);x.strokeStyle='#273854';x.beginPath();for(let i=0;i<5;i++){let y=12+i*(h-34)/4;x.moveTo(35,y);x.lineTo(w-8,y)}x.stroke();let vals=series.flatMap(s=>runs.map(r=>r[s.key]).filter(v=>v!=null));let max=Math.max(...vals,1);series.forEach(s=>{x.strokeStyle=s.color;x.lineWidth=2;x.beginPath();let started=false;runs.forEach((r,i)=>{let v=r[s.key];if(v==null){started=false;return}let px=35+(w-45)*(runs.length<2?1:i/(runs.length-1)),py=12+(h-34)*(1-v/max);if(!started)x.moveTo(px,py);else x.lineTo(px,py);started=true});x.stroke()});x.fillStyle='#93a4bd';x.font='11px system-ui';x.fillText(max.toFixed(max<10?1:0),2,15);x.fillText('0',18,h-19);series.forEach((s,i)=>{x.fillStyle=s.color;x.fillText(s.name,42+i*98,h-5)})}
 async function load(){let staticMode=!['127.0.0.1','localhost'].includes(location.hostname),runs,l,h={};
 if(staticMode){let payload=await (await fetch('./data.json',{cache:'no-store'})).json(),all=payload.runs||[],hours={'24h':24,'7d':168,'30d':720}[selected],cutoff=hours?Date.now()-hours*3600000:0;runs=all.filter(r=>new Date(r.started_at).getTime()>=cutoff).reverse();l=all[0]||null;h=payload.current_health||{}}
-else{let [sumRes,runsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000')]),sum=await sumRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{}}
+else{let [sumRes,runsRes,settingsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000'),fetch('/api/settings')]),sum=await sumRes.json(),settings=await settingsRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{};document.getElementById('frequency-settings').hidden=false;document.getElementById('collection-interval').value=settings.collection_interval_minutes}
 if(!l){document.getElementById('message').textContent='No hourly tests recorded yet. Run: python3 speed_tracker.py collect';return}
 runs=runs.map(normalizeRun);l=normalizeRun(l);
 document.getElementById('message').textContent='Last hourly test '+new Date(l.completed_at).toLocaleString()+' · '+fmt(l.duration_seconds)+' seconds';
 let status=document.getElementById('status');let currentStatus=h.status||l.status;status.textContent=currentStatus;status.className='value status '+currentStatus;
-document.getElementById('testmy').textContent=pair(l.testmy_download_mbps,l.testmy_upload_mbps)+' Mbps';
-document.getElementById('networkquality').textContent=pair(l.networkquality_download_mbps,l.networkquality_upload_mbps)+' Mbps';
+document.getElementById('apple-download').textContent=fmt(l.networkquality_download_mbps)+' Mbps';document.getElementById('apple-upload').textContent=fmt(l.networkquality_upload_mbps)+' Mbps';
 document.getElementById('latency').textContent=pair(h.latency_p95??l.latency_p95,h.latency_p99??l.latency_p99)+' ms';
 document.getElementById('layer-router').textContent=ok(h.router_ping_ok??l.router_ping_ok);
 document.getElementById('layer-internet').textContent=ok(h.internet_ping_ok??l.internet_ping_ok);
@@ -1238,25 +1176,33 @@ document.getElementById('layer-ipv6').textContent=ok(h.ipv6_ok??l.ipv6_ok);
 document.getElementById('layer-dns').textContent=ok(h.dns_ok??l.dns_ok);
 document.getElementById('layer-https').textContent=ok(h.https_ok??l.https_ok);
 document.getElementById('layer-route').textContent=(h.route_changed??l.route_changed)?'Changed':ok(h.ipv4_route_ok??l.ipv4_route_ok);
-draw('speed',runs,[{key:'testmy_download_mbps',name:'TestMy',color:'#58a6ff'},{key:'networkquality_download_mbps',name:'Apple',color:'#42d392'}]);
+draw('speed',runs,[{key:'networkquality_'+speedMetric+'_mbps',name:'Apple',color:'#42d392'}]);
 draw('latencies',runs,[{key:'latency_p95',name:'p95',color:'#f5b942'},{key:'latency_p99',name:'p99',color:'#ff6b6b'}]);
 draw('loss',runs,[{key:'packet_loss_percent',name:'Internet',color:'#ff6b6b'},{key:'gateway_packet_loss_percent',name:'Router',color:'#b392f0'}]);
 draw('http',runs,[{key:'dns_time_ms',name:'DNS',color:'#58a6ff'},{key:'tcp_connect_ms',name:'TCP',color:'#42d392'},{key:'tls_handshake_ms',name:'TLS',color:'#f5b942'},{key:'first_byte_ms',name:'TTFB',color:'#b392f0'}]);
-document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.testmy_download_mbps,r.testmy_upload_mbps)}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
+document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
 }
 function normalizeRun(r){if(!r)return r;return {...r,networkquality_download_mbps:r.networkquality_download_mbps??r.download_mbps,networkquality_upload_mbps:r.networkquality_upload_mbps??r.upload_mbps,latency_p50:r.latency_p50??r.ping_latency_ms,latency_p95:r.latency_p95??r.ping_latency_ms,latency_p99:r.latency_p99??r.loaded_latency_ms??r.ping_latency_ms};}
 document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{selected=b.dataset.range;document.querySelectorAll('[data-range]').forEach(x=>x.classList.toggle('active',x===b));load()});addEventListener('resize',()=>load());load().catch(e=>document.getElementById('message').textContent=e);
+document.querySelectorAll('[data-speed-metric]').forEach(b=>b.onclick=()=>{speedMetric=b.dataset.speedMetric;document.querySelectorAll('[data-speed-metric]').forEach(x=>x.classList.toggle('active',x===b));load()});
+document.getElementById('frequency-settings').onsubmit=async e=>{e.preventDefault();let output=document.getElementById('settings-output'),interval=Number(document.getElementById('collection-interval').value);output.textContent='Saving...';try{let response=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({collection_interval_minutes:interval})}),data=await response.json();if(!response.ok)throw new Error(data.error||'Could not save');output.textContent='Saved · every '+data.collection_interval_minutes+' minutes'}catch(error){output.textContent=error.message}};
 </script></body></html>
 """
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     db_path = DB_PATH
+    config_path = CONFIG_PATH
 
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.respond(DASHBOARD.encode(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/settings":
+            self.respond(json.dumps({
+                "collection_interval_minutes": load_collection_interval(self.config_path)
+            }).encode(), "application/json")
             return
         if parsed.path not in ("/api/summary", "/api/runs", "/api/health"):
             self.send_error(404)
@@ -1278,6 +1224,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     }
             self.respond(json.dumps(payload).encode(), "application/json")
         except (ValueError, sqlite3.Error) as exc:
+            self.respond(json.dumps({"error": str(exc)}).encode(), "application/json", 400)
+
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/settings":
+            self.send_error(404)
+            return
+        try:
+            if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                raise ValueError("Content-Type must be application/json")
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 1024:
+                raise ValueError("invalid request size")
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError("settings must be a JSON object")
+            interval = validate_collection_interval(data.get("collection_interval_minutes"))
+            reload_collect_agent(interval)
+            save_collection_interval(interval, self.config_path)
+            self.respond(json.dumps({
+                "collection_interval_minutes": interval
+            }).encode(), "application/json")
+        except (json.JSONDecodeError, TypeError, ValueError, RuntimeError) as exc:
             self.respond(json.dumps({"error": str(exc)}).encode(), "application/json", 400)
 
     def respond(self, body, content_type, status=200):
@@ -1393,9 +1361,49 @@ def monitor_forever(db_path=DB_PATH, runner=run_command):
             time.sleep(max(1, MONITOR_INTERVAL_SECONDS - elapsed))
 
 
-def agent_plists(script_path=None, python_path=None):
+def validate_collection_interval(value):
+    if isinstance(value, bool):
+        raise ValueError("collection interval must be a whole number of minutes")
+    try:
+        interval = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("collection interval must be a whole number of minutes") from exc
+    if str(value).strip() != str(interval):
+        raise ValueError("collection interval must be a whole number of minutes")
+    if not MIN_COLLECTION_INTERVAL_MINUTES <= interval <= MAX_COLLECTION_INTERVAL_MINUTES:
+        raise ValueError(
+            f"collection interval must be between {MIN_COLLECTION_INTERVAL_MINUTES} "
+            f"and {MAX_COLLECTION_INTERVAL_MINUTES} minutes"
+        )
+    return interval
+
+
+def load_collection_interval(path=CONFIG_PATH):
+    try:
+        data = json.loads(Path(path).read_text())
+        return validate_collection_interval(data.get("collection_interval_minutes"))
+    except FileNotFoundError:
+        return DEFAULT_COLLECTION_INTERVAL_MINUTES
+    except (json.JSONDecodeError, AttributeError, ValueError):
+        return DEFAULT_COLLECTION_INTERVAL_MINUTES
+
+
+def save_collection_interval(value, path=CONFIG_PATH):
+    interval = validate_collection_interval(value)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"collection_interval_minutes": interval}, indent=2) + "\n")
+    return interval
+
+
+def agent_plists(script_path=None, python_path=None, collection_interval_minutes=None):
     script_path = str(Path(script_path or __file__).resolve())
     python_path = python_path or sys.executable
+    interval = validate_collection_interval(
+        collection_interval_minutes
+        if collection_interval_minutes is not None
+        else load_collection_interval()
+    )
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     common = {
         "ProcessType": "Background",
@@ -1406,7 +1414,7 @@ def agent_plists(script_path=None, python_path=None):
         "Label": COLLECT_LABEL,
         "ProgramArguments": [python_path, script_path, "collect", "--publish"],
         "RunAtLoad": True,
-        "StartCalendarInterval": {"Minute": 0},
+        "StartInterval": interval * 60,
         "StandardOutPath": str(LOG_DIR / "collect.log"),
         "StandardErrorPath": str(LOG_DIR / "collect-error.log"),
     }
@@ -1444,6 +1452,17 @@ def write_agents():
     return created
 
 
+def write_collect_agent(collection_interval_minutes=None):
+    AGENT_DIR.mkdir(parents=True, exist_ok=True)
+    data = agent_plists(
+        collection_interval_minutes=collection_interval_minutes
+    )[COLLECT_LABEL]
+    path = AGENT_DIR / f"{COLLECT_LABEL}.plist"
+    with path.open("wb") as handle:
+        plistlib.dump(data, handle, sort_keys=False)
+    return path
+
+
 def launchctl(*args):
     return subprocess.run(
         ["/bin/launchctl", *args], capture_output=True, text=True, check=False
@@ -1459,6 +1478,16 @@ def install_agents():
         if result.returncode:
             raise RuntimeError(result.stderr.strip() or f"could not load {path.name}")
     return paths
+
+
+def reload_collect_agent(collection_interval_minutes):
+    path = write_collect_agent(collection_interval_minutes)
+    domain = f"gui/{os.getuid()}"
+    launchctl("bootout", domain, str(path))
+    result = launchctl("bootstrap", domain, str(path))
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or f"could not load {path.name}")
+    return path
 
 
 def uninstall_agents():
