@@ -1118,27 +1118,30 @@ DASHBOARD = r"""<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#0b1220;--card:#121c2f;--muted:#93a4bd;--line:#273854;--good:#42d392;--warn:#f5b942;--bad:#ff6b6b;--accent:#58a6ff}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf3fb;font:15px system-ui,-apple-system,sans-serif}
-main{max-width:1220px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}
+main{max-width:1500px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}
 h1{margin:0;font-size:26px}.range button{background:transparent;color:var(--muted);border:1px solid var(--line);padding:7px 11px}
 .range button:first-child{border-radius:8px 0 0 8px}.range button:last-child{border-radius:0 8px 8px 0}.range .active{background:#253b60;color:white}
-.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}
-.label{color:var(--muted);font-size:12px;text-transform:uppercase}.value{font-size:24px;margin-top:5px}.status{font-weight:700}
+.cards{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin:18px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px}
+.label{color:var(--muted);font-size:11px;text-transform:uppercase}.value{font-size:22px;margin-top:6px;white-space:nowrap}.status{font-weight:700}
 .healthy{color:var(--good)}.degraded{color:var(--warn)}.failed{color:var(--bad)}
 .layers{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}.layer{border:1px solid var(--line);border-radius:8px;padding:10px;background:#0f1828}.layer strong{display:block;font-size:13px}.layer span{color:var(--muted);font-size:12px}
-.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel h2{font-size:15px;margin:0 0 10px}canvas{width:100%;height:220px}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel h2{font-size:15px;margin:0 0 10px}.chart-panel canvas{width:100%;height:270px}.http-panel canvas{height:300px}
 table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted)}
 #message{color:var(--muted);margin:12px 0}.wide{margin-top:12px;overflow:auto}.small{font-size:12px;color:var(--muted)}
 .settings{display:flex;align-items:end;gap:10px;margin-bottom:12px}.settings[hidden]{display:none}.settings label{color:var(--muted);font-size:12px}.settings input{display:block;width:110px;margin-top:5px;background:#0f1828;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px}.settings button{padding:7px 12px}.settings-output{color:var(--muted);font-size:12px}
-@media(max-width:980px){.cards,.charts{grid-template-columns:1fr 1fr}.layers{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){main{padding:16px}.cards,.charts,.layers{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+@media(max-width:1180px){.cards{grid-template-columns:repeat(4,1fr)}}@media(max-width:980px){.charts{grid-template-columns:1fr}.cards{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){main{padding:16px}.cards{grid-template-columns:1fr 1fr}.layers{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;flex-direction:column}.settings{align-items:flex-start;flex-wrap:wrap}.wide{font-size:12px}}
 </style></head><body><main>
 <header><div><h1>Connection health</h1><div id="message">Loading...</div></div>
 <div class="range"><button data-range="24h" class="active">24h</button><button data-range="7d">7d</button><button data-range="30d">30d</button><button data-range="all">All</button></div></header>
 <form id="frequency-settings" class="settings" hidden><label>Test frequency (minutes)<input id="collection-interval" type="number" min="15" max="1440" step="1" required></label><button type="submit">Save</button><span id="settings-output" class="settings-output"></span></form>
 <section class="cards">
+<div class="card"><div class="label">Download now</div><div id="apple-download" class="value">-</div></div>
+<div class="card"><div class="label">Upload now</div><div id="apple-upload" class="value">-</div></div>
+<div class="card"><div class="label">Latency p95</div><div id="latency-p95" class="value">-</div></div>
+<div class="card"><div class="label">Latency p99</div><div id="latency-p99" class="value">-</div></div>
+<div class="card"><div class="label">Packet loss</div><div id="current-loss" class="value">-</div></div>
+<div class="card"><div class="label">HTTP total</div><div id="http-total" class="value">-</div></div>
 <div class="card"><div class="label">Status</div><div id="status" class="value">-</div></div>
-<div class="card"><div class="label">Download</div><div id="apple-download" class="value">-</div><div class="small">Sequential speed test</div></div>
-<div class="card"><div class="label">Upload</div><div id="apple-upload" class="value">-</div><div class="small">Sequential speed test</div></div>
-<div class="card"><div class="label">p95 / p99 latency</div><div id="latency" class="value">-</div></div>
 </section>
 <section class="layers">
 <div class="layer"><strong id="layer-router">-</strong><span>Router</span></div>
@@ -1149,17 +1152,22 @@ table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{t
 <div class="layer"><strong id="layer-route">-</strong><span>Route</span></div>
 </section>
 <section class="charts">
-<div class="panel"><h2>Provider speed (Mbps)</h2><canvas id="speed"></canvas></div>
-<div class="panel"><h2>Latency percentiles (ms)</h2><canvas id="latencies"></canvas></div>
-<div class="panel"><h2>Packet loss (%)</h2><canvas id="loss"></canvas></div>
-<div class="panel"><h2>HTTP/TLS timing (ms)</h2><canvas id="http"></canvas></div>
+<div class="panel chart-panel"><h2>Speed over time</h2><canvas id="speed"></canvas></div>
+<div class="panel chart-panel"><h2>Latency over time (ms)</h2><canvas id="latencies"></canvas></div>
+<div class="panel chart-panel"><h2>Packet loss over time (%)</h2><canvas id="loss"></canvas></div>
+<div class="panel chart-panel http-panel"><h2>HTTP request breakdown (ms)</h2><canvas id="http"></canvas></div>
 </section>
-<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Time</th><th>Status</th><th>Download / Upload</th><th>Loss</th><th>p95/p99</th><th>DNS/HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
+<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Timestamp</th><th>Download</th><th>Upload</th><th>p95</th><th>p99</th><th>Packet loss</th><th>DNS</th><th>TCP</th><th>TLS</th><th>TTFB</th><th>Result</th></tr></thead><tbody id="rows"></tbody></table></section>
 </main><script>
 let selected='24h'; const fmt=(v,d=1)=>v==null?'-':Number(v).toFixed(d);
 const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ok=v=>v==null?'-':(v?'OK':'Fail'); const pair=(a,b)=>fmt(a)+' / '+fmt(b);
-function draw(id,runs,series){const c=document.getElementById(id),dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);x.strokeStyle='#273854';x.beginPath();for(let i=0;i<5;i++){let y=12+i*(h-34)/4;x.moveTo(35,y);x.lineTo(w-8,y)}x.stroke();let vals=series.flatMap(s=>runs.map(r=>r[s.key]).filter(v=>v!=null));let max=Math.max(...vals,1);series.forEach(s=>{x.strokeStyle=s.color;x.lineWidth=2;x.beginPath();let started=false;runs.forEach((r,i)=>{let v=r[s.key];if(v==null){started=false;return}let px=35+(w-45)*(runs.length<2?1:i/(runs.length-1)),py=12+(h-34)*(1-v/max);if(!started)x.moveTo(px,py);else x.lineTo(px,py);started=true});x.stroke()});x.fillStyle='#93a4bd';x.font='11px system-ui';x.fillText(max.toFixed(max<10?1:0),2,15);x.fillText('0',18,h-19);series.forEach((s,i)=>{x.fillStyle=s.color;x.fillText(s.name,42+i*98,h-5)})}
+function canvas(id){const c=document.getElementById(id),dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);x.font='11px system-ui';return {x,w,h}}
+const timeLabel=v=>new Date(v).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+function axes(x,w,h,max,runs){const left=42,right=10,top=28,bottom=34;x.strokeStyle='#273854';x.fillStyle='#93a4bd';x.lineWidth=1;for(let i=0;i<5;i++){let y=top+i*(h-top-bottom)/4;x.beginPath();x.moveTo(left,y);x.lineTo(w-right,y);x.stroke();let value=max*(1-i/4);x.fillText(value.toFixed(max<10?1:0),2,y+4)}let marks=Math.min(4,runs.length);for(let i=0;i<marks;i++){let index=marks<2?0:Math.round(i*(runs.length-1)/(marks-1)),px=left+(w-left-right)*(runs.length<2 ? .5 : index/(runs.length-1)),label=timeLabel(runs[index].started_at);x.fillText(label,Math.max(left,Math.min(px-35,w-right-70)),h-8)}return {left,right,top,bottom}}
+function lineChart(id,runs,series,minimumMax=1,thresholds=[]){const {x,w,h}=canvas(id),values=series.flatMap(s=>runs.map(r=>r[s.key]).filter(v=>v!=null)),max=Math.max(...values,minimumMax),a=axes(x,w,h,max,runs);thresholds.forEach(t=>{let y=a.top+(h-a.top-a.bottom)*(1-t.value/max);x.strokeStyle=t.color;x.setLineDash([5,4]);x.beginPath();x.moveTo(a.left,y);x.lineTo(w-a.right,y);x.stroke();x.setLineDash([]);x.fillStyle=t.color;x.fillText(t.name,w-a.right-48,y-4)});series.forEach((s,si)=>{x.strokeStyle=s.color;x.lineWidth=2;x.beginPath();let started=false;runs.forEach((r,i)=>{let v=r[s.key];if(v==null){started=false;return}let px=a.left+(w-a.left-a.right)*(runs.length<2 ? .5 : i/(runs.length-1)),py=a.top+(h-a.top-a.bottom)*(1-v/max);if(!started)x.moveTo(px,py);else x.lineTo(px,py);started=true});x.stroke();x.fillStyle=s.color;x.fillText(s.name,a.left+si*92,12)})}
+function lossChart(id,runs){const {x,w,h}=canvas(id),values=runs.map(r=>r.packet_loss_percent??0),max=Math.max(...values,1),a=axes(x,w,h,max,runs),slot=(w-a.left-a.right)/Math.max(runs.length,1),bar=Math.max(2,Math.min(18,slot*.55));runs.forEach((r,i)=>{let v=r.packet_loss_percent??0,px=a.left+slot*i+(slot-bar)/2,height=(h-a.top-a.bottom)*(v/max);x.fillStyle=v>0?'#ff4d4f':'#394a62';x.fillRect(px,h-a.bottom-height,bar,Math.max(v>0?2:1,height))})}
+function httpChart(id,runs){const {x,w,h}=canvas(id),items=runs.slice().reverse().slice(0,8),series=[['dns_time_ms','DNS','#58a6ff'],['tcp_connect_ms','TCP','#42d392'],['tls_handshake_ms','TLS','#f5b942'],['first_byte_ms','TTFB','#b392f0']],left=92,right=12,top=22,bottom=20,row=(h-top-bottom)/Math.max(items.length,1),totals=items.map(r=>series.reduce((n,s)=>n+(r[s[0]]??0),0)),max=Math.max(...totals,1);series.forEach((s,i)=>{x.fillStyle=s[2];x.fillRect(left+i*70,2,10,4);x.fillText(s[1],left+14+i*70,8)});items.forEach((r,i)=>{let y=top+i*row;x.fillStyle='#93a4bd';x.fillText(timeLabel(r.started_at),2,y+row*.62);let px=left;series.forEach(s=>{let value=r[s[0]]??0,width=(w-left-right)*value/max;x.fillStyle=s[2];x.fillRect(px,y+3,width,Math.max(8,row-7));px+=width})})}
 async function load(){let staticMode=!['127.0.0.1','localhost'].includes(location.hostname),runs,l,h={};
 if(staticMode){let payload=await (await fetch('./data.json',{cache:'no-store'})).json(),all=payload.runs||[],hours={'24h':24,'7d':168,'30d':720}[selected],cutoff=hours?Date.now()-hours*3600000:0;runs=all.filter(r=>new Date(r.started_at).getTime()>=cutoff).reverse();l=all[0]||null;h=payload.current_health||{}}
 else{let [sumRes,runsRes,settingsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000'),fetch('/api/settings')]),sum=await sumRes.json(),settings=await settingsRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{};document.getElementById('frequency-settings').hidden=false;document.getElementById('collection-interval').value=settings.collection_interval_minutes}
@@ -1168,18 +1176,18 @@ runs=runs.map(normalizeRun);l=normalizeRun(l);
 document.getElementById('message').textContent='Last hourly test '+new Date(l.completed_at).toLocaleString()+' · '+fmt(l.duration_seconds)+' seconds';
 let status=document.getElementById('status');let currentStatus=h.status||l.status;status.textContent=currentStatus;status.className='value status '+currentStatus;
 document.getElementById('apple-download').textContent=fmt(l.networkquality_download_mbps)+' Mbps';document.getElementById('apple-upload').textContent=fmt(l.networkquality_upload_mbps)+' Mbps';
-document.getElementById('latency').textContent=pair(h.latency_p95??l.latency_p95,h.latency_p99??l.latency_p99)+' ms';
+document.getElementById('latency-p95').textContent=fmt(h.latency_p95??l.latency_p95)+' ms';document.getElementById('latency-p99').textContent=fmt(h.latency_p99??l.latency_p99)+' ms';
+document.getElementById('current-loss').textContent=fmt(h.packet_loss_percent??l.packet_loss_percent)+'%';document.getElementById('http-total').textContent=fmt(l.https_time_ms,0)+' ms';
 document.getElementById('layer-router').textContent=ok(h.router_ping_ok??l.router_ping_ok);
 document.getElementById('layer-internet').textContent=ok(h.internet_ping_ok??l.internet_ping_ok);
 document.getElementById('layer-ipv6').textContent=ok(h.ipv6_ok??l.ipv6_ok);
 document.getElementById('layer-dns').textContent=ok(h.dns_ok??l.dns_ok);
 document.getElementById('layer-https').textContent=ok(h.https_ok??l.https_ok);
 document.getElementById('layer-route').textContent=(h.route_changed??l.route_changed)?'Changed':ok(h.ipv4_route_ok??l.ipv4_route_ok);
-draw('speed',runs,[{key:'networkquality_download_mbps',name:'Download',color:'#42d392'},{key:'networkquality_upload_mbps',name:'Upload',color:'#58a6ff'}]);
-draw('latencies',runs,[{key:'latency_p95',name:'p95',color:'#f5b942'},{key:'latency_p99',name:'p99',color:'#ff6b6b'}]);
-draw('loss',runs,[{key:'packet_loss_percent',name:'Internet',color:'#ff6b6b'},{key:'gateway_packet_loss_percent',name:'Router',color:'#b392f0'}]);
-draw('http',runs,[{key:'dns_time_ms',name:'DNS',color:'#58a6ff'},{key:'tcp_connect_ms',name:'TCP',color:'#42d392'},{key:'tls_handshake_ms',name:'TLS',color:'#f5b942'},{key:'first_byte_ms',name:'TTFB',color:'#b392f0'}]);
-document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
+lineChart('speed',runs,[{key:'networkquality_download_mbps',name:'Download',color:'#42d392'},{key:'networkquality_upload_mbps',name:'Upload',color:'#58a6ff'}]);
+lineChart('latencies',runs,[{key:'latency_p50',name:'p50',color:'#f5b942'},{key:'latency_p95',name:'p95',color:'#ff9f43'},{key:'latency_p99',name:'p99',color:'#ff4d4f'}],300,[{value:50,name:'Good',color:'#42d392'},{value:150,name:'Warning',color:'#f5b942'},{value:300,name:'Bad',color:'#ff4d4f'}]);
+lossChart('loss',runs);httpChart('http',runs);
+document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td>${fmt(r.networkquality_download_mbps)}</td><td>${fmt(r.networkquality_upload_mbps)}</td><td>${fmt(r.latency_p95)}</td><td>${fmt(r.latency_p99)}</td><td>${fmt(r.packet_loss_percent)}%</td><td>${fmt(r.dns_time_ms,0)}</td><td>${fmt(r.tcp_connect_ms,0)}</td><td>${fmt(r.tls_handshake_ms,0)}</td><td>${fmt(r.first_byte_ms,0)}</td><td class="${r.status}" title="${esc((r.degraded_reasons||[]).join('; '))}">${r.status}</td></tr>`).join('');
 }
 function normalizeRun(r){if(!r)return r;return {...r,networkquality_download_mbps:r.networkquality_download_mbps??r.download_mbps,networkquality_upload_mbps:r.networkquality_upload_mbps??r.upload_mbps,latency_p50:r.latency_p50??r.ping_latency_ms,latency_p95:r.latency_p95??r.ping_latency_ms,latency_p99:r.latency_p99??r.loaded_latency_ms??r.ping_latency_ms};}
 document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{selected=b.dataset.range;document.querySelectorAll('[data-range]').forEach(x=>x.classList.toggle('active',x===b));load()});addEventListener('resize',()=>load());load().catch(e=>document.getElementById('message').textContent=e);
