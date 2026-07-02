@@ -346,6 +346,7 @@ class SpeedTrackerTests(unittest.TestCase):
             self.assertIn("<th>TTFB</th><th>Result</th>", dashboard)
             self.assertIn('id="collection-interval"', dashboard)
             self.assertNotIn('id="frequency-settings" class="settings" hidden', dashboard)
+            self.assertIn('http://127.0.0.1:8765/', dashboard)
             self.assertIn("networkquality_download_mbps',name:'Download',color:'#42d392'", dashboard)
             self.assertIn("networkquality_upload_mbps',name:'Upload',color:'#58a6ff'", dashboard)
             self.assertNotIn("data-speed-metric", dashboard)
