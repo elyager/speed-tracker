@@ -10,18 +10,21 @@ h1{margin:0;font-size:26px}.range button{background:transparent;color:var(--mute
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:22px 0}.card,.panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px}
 .label{color:var(--muted);font-size:12px;text-transform:uppercase}.value{font-size:24px;margin-top:5px}.status{font-weight:700}
 .healthy{color:var(--good)}.degraded{color:var(--warn)}.failed{color:var(--bad)}
+.chart-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.metric-toggle button{background:transparent;color:var(--muted);border:1px solid var(--line);padding:5px 9px}.metric-toggle button:first-child{border-radius:6px 0 0 6px}.metric-toggle button:last-child{border-radius:0 6px 6px 0}.metric-toggle .active{background:#253b60;color:white}
 .layers{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}.layer{border:1px solid var(--line);border-radius:8px;padding:10px;background:#0f1828}.layer strong{display:block;font-size:13px}.layer span{color:var(--muted);font-size:12px}
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel h2{font-size:15px;margin:0 0 10px}canvas{width:100%;height:220px}
 table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted)}
 #message{color:var(--muted);margin:12px 0}.wide{margin-top:12px;overflow:auto}.small{font-size:12px;color:var(--muted)}
+.settings{display:flex;align-items:end;gap:10px;margin-bottom:12px}.settings[hidden]{display:none}.settings label{color:var(--muted);font-size:12px}.settings input{display:block;width:110px;margin-top:5px;background:#0f1828;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px}.settings button{padding:7px 12px}.settings-output{color:var(--muted);font-size:12px}
 @media(max-width:980px){.cards,.charts{grid-template-columns:1fr 1fr}.layers{grid-template-columns:repeat(3,1fr)}}@media(max-width:620px){main{padding:16px}.cards,.charts,.layers{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
 </style></head><body><main>
 <header><div><h1>Connection health</h1><div id="message">Loading...</div></div>
 <div class="range"><button data-range="24h" class="active">24h</button><button data-range="7d">7d</button><button data-range="30d">30d</button><button data-range="all">All</button></div></header>
+<form id="frequency-settings" class="settings" hidden><label>Test frequency (minutes)<input id="collection-interval" type="number" min="15" max="1440" step="1" required></label><button type="submit">Save</button><span id="settings-output" class="settings-output"></span></form>
 <section class="cards">
 <div class="card"><div class="label">Status</div><div id="status" class="value">-</div></div>
-<div class="card"><div class="label">TestMy speed</div><div id="testmy" class="value">-</div></div>
-<div class="card"><div class="label">Apple speed</div><div id="networkquality" class="value">-</div></div>
+<div class="card"><div class="label">Download</div><div id="apple-download" class="value">-</div><div class="small">Sequential speed test</div></div>
+<div class="card"><div class="label">Upload</div><div id="apple-upload" class="value">-</div><div class="small">Sequential speed test</div></div>
 <div class="card"><div class="label">p95 / p99 latency</div><div id="latency" class="value">-</div></div>
 </section>
 <section class="layers">
@@ -33,26 +36,25 @@ table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}th,td{t
 <div class="layer"><strong id="layer-route">-</strong><span>Route</span></div>
 </section>
 <section class="charts">
-<div class="panel"><h2>TestMy / Apple download (Mbps)</h2><canvas id="speed"></canvas></div>
+<div class="panel"><div class="chart-head"><h2>Provider speed (Mbps)</h2><div class="metric-toggle"><button data-speed-metric="download" class="active">Download</button><button data-speed-metric="upload">Upload</button></div></div><canvas id="speed"></canvas></div>
 <div class="panel"><h2>Latency percentiles (ms)</h2><canvas id="latencies"></canvas></div>
 <div class="panel"><h2>Packet loss (%)</h2><canvas id="loss"></canvas></div>
 <div class="panel"><h2>HTTP/TLS timing (ms)</h2><canvas id="http"></canvas></div>
 </section>
-<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Time</th><th>Status</th><th>TestMy</th><th>Apple</th><th>Loss</th><th>p95/p99</th><th>DNS/HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
+<section class="panel wide"><h2>Recent hourly tests</h2><table><thead><tr><th>Time</th><th>Status</th><th>Download / Upload</th><th>Loss</th><th>p95/p99</th><th>DNS/HTTPS</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table></section>
 </main><script>
-let selected='24h'; const fmt=(v,d=1)=>v==null?'-':Number(v).toFixed(d);
+let selected='24h',speedMetric='download'; const fmt=(v,d=1)=>v==null?'-':Number(v).toFixed(d);
 const esc=v=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ok=v=>v==null?'-':(v?'OK':'Fail'); const pair=(a,b)=>fmt(a)+' / '+fmt(b);
 function draw(id,runs,series){const c=document.getElementById(id),dpr=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;c.width=w*dpr;c.height=h*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);x.strokeStyle='#273854';x.beginPath();for(let i=0;i<5;i++){let y=12+i*(h-34)/4;x.moveTo(35,y);x.lineTo(w-8,y)}x.stroke();let vals=series.flatMap(s=>runs.map(r=>r[s.key]).filter(v=>v!=null));let max=Math.max(...vals,1);series.forEach(s=>{x.strokeStyle=s.color;x.lineWidth=2;x.beginPath();let started=false;runs.forEach((r,i)=>{let v=r[s.key];if(v==null){started=false;return}let px=35+(w-45)*(runs.length<2?1:i/(runs.length-1)),py=12+(h-34)*(1-v/max);if(!started)x.moveTo(px,py);else x.lineTo(px,py);started=true});x.stroke()});x.fillStyle='#93a4bd';x.font='11px system-ui';x.fillText(max.toFixed(max<10?1:0),2,15);x.fillText('0',18,h-19);series.forEach((s,i)=>{x.fillStyle=s.color;x.fillText(s.name,42+i*98,h-5)})}
 async function load(){let staticMode=!['127.0.0.1','localhost'].includes(location.hostname),runs,l,h={};
 if(staticMode){let payload=await (await fetch('./data.json',{cache:'no-store'})).json(),all=payload.runs||[],hours={'24h':24,'7d':168,'30d':720}[selected],cutoff=hours?Date.now()-hours*3600000:0;runs=all.filter(r=>new Date(r.started_at).getTime()>=cutoff).reverse();l=all[0]||null;h=payload.current_health||{}}
-else{let [sumRes,runsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000')]),sum=await sumRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{}}
+else{let [sumRes,runsRes,settingsRes]=await Promise.all([fetch('/api/summary'),fetch('/api/runs?range='+selected+'&limit=10000'),fetch('/api/settings')]),sum=await sumRes.json(),settings=await settingsRes.json();runs=(await runsRes.json()).runs.reverse();l=sum.latest;h=sum.current_health||{};document.getElementById('frequency-settings').hidden=false;document.getElementById('collection-interval').value=settings.collection_interval_minutes}
 if(!l){document.getElementById('message').textContent='No hourly tests recorded yet. Run: python3 speed_tracker.py collect';return}
 runs=runs.map(normalizeRun);l=normalizeRun(l);
 document.getElementById('message').textContent='Last hourly test '+new Date(l.completed_at).toLocaleString()+' · '+fmt(l.duration_seconds)+' seconds';
 let status=document.getElementById('status');let currentStatus=h.status||l.status;status.textContent=currentStatus;status.className='value status '+currentStatus;
-document.getElementById('testmy').textContent=pair(l.testmy_download_mbps,l.testmy_upload_mbps)+' Mbps';
-document.getElementById('networkquality').textContent=pair(l.networkquality_download_mbps,l.networkquality_upload_mbps)+' Mbps';
+document.getElementById('apple-download').textContent=fmt(l.networkquality_download_mbps)+' Mbps';document.getElementById('apple-upload').textContent=fmt(l.networkquality_upload_mbps)+' Mbps';
 document.getElementById('latency').textContent=pair(h.latency_p95??l.latency_p95,h.latency_p99??l.latency_p99)+' ms';
 document.getElementById('layer-router').textContent=ok(h.router_ping_ok??l.router_ping_ok);
 document.getElementById('layer-internet').textContent=ok(h.internet_ping_ok??l.internet_ping_ok);
@@ -60,12 +62,14 @@ document.getElementById('layer-ipv6').textContent=ok(h.ipv6_ok??l.ipv6_ok);
 document.getElementById('layer-dns').textContent=ok(h.dns_ok??l.dns_ok);
 document.getElementById('layer-https').textContent=ok(h.https_ok??l.https_ok);
 document.getElementById('layer-route').textContent=(h.route_changed??l.route_changed)?'Changed':ok(h.ipv4_route_ok??l.ipv4_route_ok);
-draw('speed',runs,[{key:'testmy_download_mbps',name:'TestMy',color:'#58a6ff'},{key:'networkquality_download_mbps',name:'Apple',color:'#42d392'}]);
+draw('speed',runs,[{key:'networkquality_'+speedMetric+'_mbps',name:'Apple',color:'#42d392'}]);
 draw('latencies',runs,[{key:'latency_p95',name:'p95',color:'#f5b942'},{key:'latency_p99',name:'p99',color:'#ff6b6b'}]);
 draw('loss',runs,[{key:'packet_loss_percent',name:'Internet',color:'#ff6b6b'},{key:'gateway_packet_loss_percent',name:'Router',color:'#b392f0'}]);
 draw('http',runs,[{key:'dns_time_ms',name:'DNS',color:'#58a6ff'},{key:'tcp_connect_ms',name:'TCP',color:'#42d392'},{key:'tls_handshake_ms',name:'TLS',color:'#f5b942'},{key:'first_byte_ms',name:'TTFB',color:'#b392f0'}]);
-document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.testmy_download_mbps,r.testmy_upload_mbps)}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
+document.getElementById('rows').innerHTML=runs.slice().reverse().slice(0,100).map(r=>`<tr><td>${esc(new Date(r.started_at).toLocaleString())}</td><td class="${r.status}">${r.status}</td><td>${pair(r.networkquality_download_mbps,r.networkquality_upload_mbps)}</td><td>${fmt(r.packet_loss_percent)}% / ${fmt(r.gateway_packet_loss_percent)}%</td><td>${pair(r.latency_p95,r.latency_p99)}</td><td>${fmt(r.dns_time_ms,0)} ms / ${fmt(r.https_time_ms,0)} ms</td><td>${esc((r.degraded_reasons||[]).join('; ')||'-')}</td></tr>`).join('');
 }
 function normalizeRun(r){if(!r)return r;return {...r,networkquality_download_mbps:r.networkquality_download_mbps??r.download_mbps,networkquality_upload_mbps:r.networkquality_upload_mbps??r.upload_mbps,latency_p50:r.latency_p50??r.ping_latency_ms,latency_p95:r.latency_p95??r.ping_latency_ms,latency_p99:r.latency_p99??r.loaded_latency_ms??r.ping_latency_ms};}
 document.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{selected=b.dataset.range;document.querySelectorAll('[data-range]').forEach(x=>x.classList.toggle('active',x===b));load()});addEventListener('resize',()=>load());load().catch(e=>document.getElementById('message').textContent=e);
+document.querySelectorAll('[data-speed-metric]').forEach(b=>b.onclick=()=>{speedMetric=b.dataset.speedMetric;document.querySelectorAll('[data-speed-metric]').forEach(x=>x.classList.toggle('active',x===b));load()});
+document.getElementById('frequency-settings').onsubmit=async e=>{e.preventDefault();let output=document.getElementById('settings-output'),interval=Number(document.getElementById('collection-interval').value);output.textContent='Saving...';try{let response=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({collection_interval_minutes:interval})}),data=await response.json();if(!response.ok)throw new Error(data.error||'Could not save');output.textContent='Saved · every '+data.collection_interval_minutes+' minutes'}catch(error){output.textContent=error.message}};
 </script></body></html>
